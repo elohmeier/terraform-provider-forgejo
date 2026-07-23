@@ -1,3 +1,9 @@
+## Unreleased (fork)
+
+BUG FIXES:
+
+- Paginate list lookups (upstream PR #178).
+
 ## 1.6.1 (September 18, 2026)
 
 BUG FIXES:
