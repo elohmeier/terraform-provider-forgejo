@@ -233,8 +233,9 @@ func (p *forgejoProvider) Configure(ctx context.Context, req provider.ConfigureR
 
 	// Make the Forgejo client available during DataSource and Resource
 	// type Configure methods.
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	configured := &providerClient{Client: client, api: newAPIClient(host, username, password, token)}
+	resp.DataSourceData = configured
+	resp.ResourceData = configured
 }
 
 // DataSources defines the data sources implemented in the provider.
@@ -264,6 +265,7 @@ func (p *forgejoProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewOrganizationActionSecretResource,
 		NewOrganizationActionVariableResource,
 		NewOrganizationResource,
+		NewOAuth2ApplicationResource,
 		NewPersonalAccessTokenResource,
 		NewRepositoryActionSecretResource,
 		NewRepositoryActionVariableResource,

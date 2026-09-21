@@ -63,3 +63,12 @@ resource "forgejo_team_member" "membership" {
 
 - `team_id` (Number) Numeric identifier of the team. Changing this forces a new resource to be created.
 - `user` (String) Username of the team member. Changing this forces a new resource to be created.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Import a direct team membership.
+terraform import forgejo_team_member.membership org/team/username
+```

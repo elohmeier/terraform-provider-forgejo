@@ -116,7 +116,7 @@ func (m *userResourceModel) to(s *userResourceModel, o *forgejo.EditUserOption) 
 	o.Email = m.Email.ValueStringPointer()
 	o.FullName = m.FullName.ValueStringPointer()
 
-	if s != nil && !m.Password.Equal(s.Password) {
+	if s != nil && !m.Password.IsNull() && !m.Password.Equal(s.Password) {
 		// Only update password if it has changed
 		o.Password = m.Password.ValueString()
 	}
@@ -289,8 +289,8 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"password": schema.StringAttribute{
 				// Write-only attribute
-				Description: "Password of the user.",
-				Required:    true,
+				Description: "Password of the user. Required when creating a local user; omit when importing to preserve the existing password. Stored in state when supplied.",
+				Optional:    true,
 				Sensitive:   true,
 			},
 			"must_change_password": schema.BoolAttribute{
@@ -356,12 +356,12 @@ func (r *userResource) Configure(_ context.Context, req resource.ConfigureReques
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	client, ok := sdkClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -396,6 +396,11 @@ func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, r
 		"send_notify":          data.SendNotify.ValueBool(),
 		"visibility":           data.Visibility.ValueString(),
 	})
+
+	if data.SourceID.ValueInt64() == 0 && data.Password.ValueString() == "" {
+		resp.Diagnostics.AddError("Missing local user password", "Set password when creating a local user. Existing users can be imported without a password.")
+		return
+	}
 
 	// Generate API request body from plan
 	copts := forgejo.CreateUserOption{

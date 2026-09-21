@@ -18,8 +18,9 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &teamMemberResource{}
-	_ resource.ResourceWithConfigure = &teamMemberResource{}
+	_ resource.Resource                = &teamMemberResource{}
+	_ resource.ResourceWithConfigure   = &teamMemberResource{}
+	_ resource.ResourceWithImportState = &teamMemberResource{}
 )
 
 // teamMemberResource is the resource implementation.
@@ -69,12 +70,12 @@ func (r *teamMemberResource) Configure(_ context.Context, req resource.Configure
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	client, ok := sdkClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -128,15 +129,13 @@ func (r *teamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	// Use Forgejo client to check a team member
-	diags = checkTeamMember(
-		ctx,
-		r.client,
-		data.TeamID.ValueInt64(),
-		data.User.ValueString(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	_, result, err := r.client.GetTeamMember(data.TeamID.ValueInt64(), data.User.ValueString())
+	if isNotFound(result, err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read team member", err.Error())
 		return
 	}
 
@@ -239,7 +238,7 @@ func deleteTeamMember(ctx context.Context, client *forgejo.Client, teamID int64,
 
 	// Use Forgejo client to delete a team member
 	res, err := client.RemoveTeamMember(teamID, userName)
-	if err == nil {
+	if err == nil || isNotFound(res, err) {
 		return diags
 	}
 

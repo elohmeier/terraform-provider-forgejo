@@ -64,7 +64,6 @@ import {
 
 - `email` (String) Email address of the user.
 - `login` (String) Name of the user. Changing this forces a new resource to be created.
-- `password` (String, Sensitive) Password of the user.
 
 ### Optional
 
@@ -80,6 +79,7 @@ import {
 - `login_name` (String) Login name of the user.
 - `max_repo_creation` (Number) Maximum number of repositories user can create. A value of -1 means no limit.
 - `must_change_password` (Boolean) Require user to change password?
+- `password` (String, Sensitive) Password of the user. Required when creating a local user; omit when importing to preserve the existing password. Stored in state when supplied.
 - `prohibit_login` (Boolean) Are user logins prohibited?
 - `restricted` (Boolean) Is the user restricted?
 - `send_notify` (Boolean) Send notification to administrators? Changing this forces a new resource to be created.

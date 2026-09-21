@@ -28,14 +28,14 @@ resource "forgejo_personal_access_token" "test" {
 			},
 			// Create and Read testing
 			{
-				Config: providerConfig + providerBasicAuthConfig + `
+				Config: providerBasicAuthConfig + `
 resource "forgejo_user" "test" {
 	login    = "test_user"
 	password = "password"
 	email    = "test_user@example.com"
 }
 resource "forgejo_personal_access_token" "test" {
-	provider = forgejo.basicAuth
+	provider = forgejo
 
 	user   = forgejo_user.test.login
 	name   = "tftest"
@@ -58,21 +58,21 @@ resource "forgejo_personal_access_token" "test" {
 			},
 			// Duplicate token names are not allowed.
 			{
-				Config: providerConfig + providerBasicAuthConfig + `
+				Config: providerBasicAuthConfig + `
 resource "forgejo_user" "test" {
 	login    = "test_user"
 	password = "password"
 	email    = "test_user@example.com"
 }
 resource "forgejo_personal_access_token" "test" {
-	provider = forgejo.basicAuth
+	provider = forgejo
 
 	user   = forgejo_user.test.login
 	name   = "tftest"
 	scopes = ["all"]
 }
 resource "forgejo_personal_access_token" "test1" {
-	provider = forgejo.basicAuth
+	provider = forgejo
 
 	user   = forgejo_user.test.login
 	name   = "tftest"
@@ -82,14 +82,14 @@ resource "forgejo_personal_access_token" "test1" {
 			},
 			// Changing scope recreates the token.
 			{
-				Config: providerConfig + providerBasicAuthConfig + `
+				Config: providerBasicAuthConfig + `
 resource "forgejo_user" "test" {
 	login    = "test_user"
 	password = "password"
 	email    = "test_user@example.com"
 }
 resource "forgejo_personal_access_token" "test" {
-	provider = forgejo.basicAuth
+	provider = forgejo
 
 	user   = forgejo_user.test.login
 	name   = "tftest"
@@ -116,14 +116,14 @@ resource "forgejo_personal_access_token" "test" {
 			},
 			// Changing name recreates the token.
 			{
-				Config: providerConfig + providerBasicAuthConfig + `
+				Config: providerBasicAuthConfig + `
 resource "forgejo_user" "test" {
 	login    = "test_user"
 	password = "password"
 	email    = "test_user@example.com"
 }
 resource "forgejo_personal_access_token" "test" {
-	provider = forgejo.basicAuth
+	provider = forgejo
 
 	user   = forgejo_user.test.login
 	name   = "tftest1"

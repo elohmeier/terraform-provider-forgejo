@@ -1,5 +1,12 @@
 # Terraform Provider for Forgejo
 
+This is the **elohmeier fork** of svalabs/terraform-provider-forgejo, based on
+v1.6.1. It adds adoption, access reconciliation, repository-restricted tokens and
+OAuth application management. See [fork coverage, PR review, installation and
+limitations](docs/fork.md) before use. The upstream examples below reference
+`svalabs/forgejo`; that published provider does not contain the fork additions.
+
+
 ![Tests](https://github.com/svalabs/terraform-provider-forgejo/actions/workflows/test.yml/badge.svg)
 ![Release](https://github.com/svalabs/terraform-provider-forgejo/actions/workflows/release.yml/badge.svg)
 ![Test Coverage](https://img.shields.io/badge/Coverage-74.9%25-brightgreen?logo=go)
@@ -22,6 +29,7 @@ Resources:
 - `forgejo_deploy_key` ([documentation](docs/resources/deploy_key.md))
 - `forgejo_gpg_key` ([documentation](docs/resources/gpg_key.md))
 - `forgejo_organization` ([documentation](docs/resources/organization.md))
+- `forgejo_oauth2_application` ([documentation](docs/resources/oauth2_application.md))
 - `forgejo_organization_action_secret` ([documentation](docs/resources/organization_action_secret.md))
 - `forgejo_organization_action_variable` ([documentation](docs/resources/organization_action_variable.md))
 - `forgejo_personal_access_token` ([documentation](docs/resources/personal_access_token.md))

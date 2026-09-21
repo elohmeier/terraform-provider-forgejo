@@ -75,6 +75,11 @@ func (m *teamResourceModel) to(o *forgejo.EditTeamOption, ctx context.Context) (
 	o.Name = m.Name.ValueString()
 	o.Description = m.Description.ValueStringPointer()
 	o.Permission = forgejo.AccessMode(m.Permission.ValueString())
+	// The SDK requires a permission even for granular unit permissions.
+	// A valid read value lets Forgejo derive the effective level from units_map.
+	if m.Permission.IsNull() || m.Permission.IsUnknown() {
+		o.Permission = forgejo.AccessModeRead
+	}
 	o.CanCreateOrgRepo = m.CanCreateOrgRepo.ValueBoolPointer()
 	o.IncludesAllRepositories = m.IncludesAllRepositories.ValueBoolPointer()
 	diags = m.UnitsMap.ElementsAs(ctx, &o.UnitsMap, false)
@@ -155,10 +160,9 @@ func (r *teamResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"permission": schema.StringAttribute{
-				Description: "Permissions within the owning organization. **Note**: If you set `admin` or `owner` here, make sure to set the correct `units_map`.",
+				Description: "Permissions within the owning organization. Omit to derive from units_map. **Note**: If you set `admin` or `owner` here, make sure to set the correct `units_map`.",
 				Computed:    true,
 				Optional:    true,
-				Default:     stringdefault.StaticString("read"),
 				Validators: []validator.String{
 					stringvalidator.OneOf(
 						"read",
@@ -209,12 +213,12 @@ func (r *teamResource) Configure(_ context.Context, req resource.ConfigureReques
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	client, ok := sdkClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -326,14 +330,13 @@ func (r *teamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	// Use Forgejo client to read existing team
-	team, diags := getOrgTeamByID(
-		ctx,
-		r.client,
-		data.ID.ValueInt64(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	team, result, err := r.client.GetTeam(data.ID.ValueInt64())
+	if isNotFound(result, err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read team", err.Error())
 		return
 	}
 

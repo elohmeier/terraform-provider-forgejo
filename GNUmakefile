@@ -6,11 +6,14 @@ build:
 install: build
 	go install -v ./...
 
+install-local:
+	bash tools/build-local.sh
+
 lint:
 	golangci-lint run
 
 generate:
-	cd tools; go generate ./...
+	bash tools/generate.sh
 
 fmt:
 	gofmt -s -w -e .
@@ -23,4 +26,4 @@ testacc:
 	TF_ACC=1 go test -v -cover -timeout 10m -coverprofile=coverage.out ./internal/schemavalidator
 	TF_ACC=1 go test -v -cover -timeout 10m -coverprofile=coverage.out ./internal/provider
 
-.PHONY: fmt lint test testacc build install generate
+.PHONY: fmt lint test testacc build install install-local generate

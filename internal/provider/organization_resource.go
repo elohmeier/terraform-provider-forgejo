@@ -3,12 +3,13 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -22,13 +23,15 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &organizationResource{}
-	_ resource.ResourceWithConfigure = &organizationResource{}
+	_ resource.Resource                = &organizationResource{}
+	_ resource.ResourceWithConfigure   = &organizationResource{}
+	_ resource.ResourceWithImportState = &organizationResource{}
 )
 
 // organizationResource is the resource implementation.
 type organizationResource struct {
 	client *forgejo.Client
+	api    *apiClient
 }
 
 // organizationResourceModel maps the resource schema data.
@@ -147,14 +150,11 @@ func (r *organizationResource) Schema(_ context.Context, _ resource.SchemaReques
 				},
 			},
 			"repo_admin_change_team_access": schema.BoolAttribute{
-				// Create-only attribute
-				Description: "Whether repository admin can add and remove access for teams. Changing this forces a new resource to be created.",
+				// The API exposes this field even though SDK v3.0.0 omits it.
+				Description: "Whether repository admins can add and remove team access.",
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
-				PlanModifiers: []planmodifier.Bool{
-					boolplanmodifier.RequiresReplaceIfConfigured(),
-				},
 			},
 		},
 	}
@@ -167,12 +167,12 @@ func (r *organizationResource) Configure(_ context.Context, req resource.Configu
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	configured, ok := req.ProviderData.(*providerClient)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -180,7 +180,8 @@ func (r *organizationResource) Configure(_ context.Context, req resource.Configu
 		return
 	}
 
-	r.client = client
+	r.client = configured.Client
+	r.api = configured.api
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -279,19 +280,22 @@ func (r *organizationResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	// Use Forgejo client to get organization
-	org, diags := getOrganizationByName(
-		ctx,
-		r.client,
-		data.Name.ValueString(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	org, result, err := r.client.GetOrg(data.Name.ValueString())
+	if isNotFound(result, err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read organization", err.Error())
 		return
 	}
 
 	// Map response body to model
 	data.from(org)
+	if err := data.readAccessSetting(ctx, r.api); err != nil {
+		resp.Diagnostics.AddError("Unable to read organization access setting", err.Error())
+		return
+	}
 
 	// Save data into Terraform state
 	diags = resp.State.Set(ctx, &data)
@@ -300,89 +304,37 @@ func (r *organizationResource) Read(ctx context.Context, req resource.ReadReques
 
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *organizationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	defer un(trace(ctx, "Update organization resource"))
-
 	var data organizationResourceModel
-
-	// Read Terraform plan data into model
-	diags := req.Plan.Get(ctx, &data)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	opts := struct {
+		forgejo.EditOrgOption
+		RepoAdminChangeTeamAccess bool `json:"repo_admin_change_team_access"`
+	}{RepoAdminChangeTeamAccess: data.RepoAdminChangeTeamAccess.ValueBool()}
+	data.to(&opts.EditOrgOption)
+	// Send all settings together: omitted string fields in EditOrg are reset by
+	// Forgejo. A separate PATCH for just the access flag would erase metadata.
+	if _, err := r.api.request(ctx, http.MethodPatch, "/orgs/"+url.PathEscape(data.Name.ValueString()), opts, nil); err != nil {
+		resp.Diagnostics.AddError("Unable to update organization", err.Error())
+		return
+	}
+	org, diags := getOrganizationByName(ctx, r.client, data.Name.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	tflog.Info(ctx, "Update organization", map[string]any{
-		"name":        data.Name.ValueString(),
-		"full_name":   data.FullName.ValueString(),
-		"description": data.Description.ValueString(),
-		"website":     data.Website.ValueString(),
-		"location":    data.Location.ValueString(),
-		"visibility":  data.Visibility.ValueString(),
-	})
-
-	// Generate API request body from plan
-	opts := forgejo.EditOrgOption{}
-	data.to(&opts)
-
-	// Validate API request body
-	err := opts.Validate()
-	if err != nil {
-		resp.Diagnostics.AddError("Input validation error", err.Error())
-
+	if org.Visibility != data.Visibility.ValueString() {
+		resp.Diagnostics.AddError("Forgejo ignored organization visibility change", "Forgejo 15.0.1 cannot change an existing private/limited organisation back to public through either the organisation or admin-user API. Upgrade to a server version with this API bug fixed or change visibility through the web interface, then refresh. The provider will not replace the organisation or claim the change succeeded.")
 		return
 	}
-
-	// Use Forgejo client to update existing organization
-	res, err := r.client.EditOrg(
-		data.Name.ValueString(),
-		opts,
-	)
-	if err != nil {
-		var msg string
-		if res == nil {
-			msg = fmt.Sprintf("Unknown error with nil response: %s", err)
-		} else {
-			tflog.Error(ctx, "Error", map[string]any{
-				"status": res.Status,
-			})
-
-			switch res.StatusCode {
-			case 404:
-				msg = fmt.Sprintf(
-					"Organization with name %s not found: %s",
-					data.Name.String(),
-					err,
-				)
-			default:
-				msg = fmt.Sprintf(
-					"Unknown error (status %d): %s",
-					res.StatusCode,
-					err,
-				)
-			}
-		}
-		resp.Diagnostics.AddError("Unable to update organization", msg)
-
-		return
-	}
-
-	// Use Forgejo client to get organization
-	org, diags := getOrganizationByName(
-		ctx,
-		r.client,
-		data.Name.ValueString(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// Map response body to model
 	data.from(org)
-
-	// Save data into Terraform state
-	diags = resp.State.Set(ctx, &data)
-	resp.Diagnostics.Append(diags...)
+	if err := data.readAccessSetting(ctx, r.api); err != nil {
+		resp.Diagnostics.AddError("Unable to read organization access setting", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
@@ -437,4 +389,31 @@ func (r *organizationResource) Delete(ctx context.Context, req resource.DeleteRe
 // NewOrganizationResource is a helper function to simplify the provider implementation.
 func NewOrganizationResource() resource.Resource {
 	return &organizationResource{}
+}
+
+// ImportState adopts an organisation without creating or changing it.
+func (r *organizationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	org, diags := getOrganizationByName(ctx, r.client, req.ID)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var data organizationResourceModel
+	data.from(org)
+	if err := data.readAccessSetting(ctx, r.api); err != nil {
+		resp.Diagnostics.AddError("Unable to import organization access setting", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (m *organizationResourceModel) readAccessSetting(ctx context.Context, api *apiClient) error {
+	var org struct {
+		RepoAdminChangeTeamAccess bool `json:"repo_admin_change_team_access"`
+	}
+	if _, err := api.request(ctx, http.MethodGet, "/orgs/"+url.PathEscape(m.Name.ValueString()), nil, &org); err != nil {
+		return err
+	}
+	m.RepoAdminChangeTeamAccess = types.BoolValue(org.RepoAdminChangeTeamAccess)
+	return nil
 }

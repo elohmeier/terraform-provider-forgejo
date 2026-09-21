@@ -1,8 +1,26 @@
-## Unreleased (fork)
+## Unreleased (elohmeier fork)
+
+FEATURES:
+
+- `forgejo_team_repository`: numeric team/repository references, import and drift recovery (adapted from upstream PR #155).
+- Import existing organisations, collaborators, team memberships and token metadata.
+- `forgejo_personal_access_token`: repository restrictions through `repository_ids`.
+- `forgejo_oauth2_application`: create, update, import and reconcile user-owned OAuth applications; updates explicitly rotate the secret.
+- `forgejo_user`: omit password when importing existing accounts to preserve credentials.
+- `forgejo_organization`: read/import and update `repo_admin_change_team_access` in place.
 
 BUG FIXES:
 
-- Paginate list lookups (upstream PR #178).
+- Paginate list lookups (upstream PR #178), including newer token lookups.
+- Recover missing organisations, teams, memberships, collaborator grants, team repository grants, OAuth applications and tokens during refresh.
+- Derive team permission from `units_map` when omitted, avoiding the invalid default read permission for granular write access.
+- Diagnose the Forgejo 15.0.1 visibility-to-public API bug instead of reporting an inconsistent successful update.
+- Use a single provider configuration in token acceptance tests; the in-process test harness does not isolate provider aliases.
+
+DEVELOPMENT:
+
+- Disposable Forgejo 15.0.1 acceptance runner, regression tests and local OpenTofu mirror build.
+- Generate documentation using OpenTofu without requiring Terraform or a published provider.
 
 ## 1.6.1 (September 18, 2026)
 

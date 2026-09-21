@@ -61,3 +61,12 @@ resource "forgejo_collaborator" "admin" {
 - `permission` (String) Repository permissions of the collaborator. Must be one of 'read', 'write', 'admin'.
 - `repository_id` (Number) Numeric identifier of the repository. Changing this forces a new resource to be created.
 - `user` (String) Username of the collaborator. Changing this forces a new resource to be created.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Import a direct collaborator grant.
+terraform import forgejo_collaborator.admin owner/repository/username
+```

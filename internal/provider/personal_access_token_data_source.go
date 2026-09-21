@@ -79,12 +79,12 @@ func (d *personalAccessTokenDataSource) Configure(_ context.Context, req datasou
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	client, ok := sdkClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -142,67 +142,58 @@ func getPersonalAccessToken(
 		"user": user,
 	})
 
-	// Use Forgejo client to list personal access tokens
-	tokens, res, err := client.ListAccessTokens(
-		user,
-		forgejo.ListAccessTokensOptions{
-			ListOptions: forgejo.ListOptions{
-				Page: -1,
-			},
-		},
-	)
-	if err != nil {
-		var msg string
-		if res == nil {
-			msg = fmt.Sprintf("Unknown error with nil response: %s", err)
-		} else {
-			tflog.Error(ctx, "Error", map[string]any{
-				"status": res.Status,
-			})
+	for page := 1; ; page++ {
+		tokens, res, err := client.ListAccessTokens(user, forgejo.ListAccessTokensOptions{ListOptions: forgejo.ListOptions{Page: page, PageSize: 50}})
 
-			switch res.StatusCode {
-			case 403:
-				msg = fmt.Sprintf(
-					"Personal access tokens for user '%s' forbidden: %s",
-					user,
-					err,
-				)
-			case 404:
-				msg = fmt.Sprintf(
-					"Personal access tokens for user '%s' not found: %s",
-					user,
-					err,
-				)
-			default:
-				msg = fmt.Sprintf(
-					"Unknown error (status %d): %s",
-					res.StatusCode,
-					err,
-				)
+		if err != nil {
+			var msg string
+			if res == nil {
+				msg = fmt.Sprintf("Unknown error with nil response: %s", err)
+			} else {
+				tflog.Error(ctx, "Error", map[string]any{
+					"status": res.Status,
+				})
+
+				switch res.StatusCode {
+				case 403:
+					msg = fmt.Sprintf(
+						"Personal access tokens for user '%s' forbidden: %s",
+						user,
+						err,
+					)
+				case 404:
+					msg = fmt.Sprintf(
+						"Personal access tokens for user '%s' not found: %s",
+						user,
+						err,
+					)
+				default:
+					msg = fmt.Sprintf(
+						"Unknown error (status %d): %s",
+						res.StatusCode,
+						err,
+					)
+				}
 			}
+			diags.AddError("Unable to list personal access tokens", msg)
+
+			return nil, diags
 		}
-		diags.AddError("Unable to list personal access tokens", msg)
 
-		return nil, diags
+		// Search for personal access token with given name
+		idx := slices.IndexFunc(tokens, func(t *forgejo.AccessToken) bool {
+			return strings.EqualFold(t.Name, tokenName)
+		})
+		if idx != -1 {
+			return tokens[idx], diags
+		}
+		if len(tokens) == 0 {
+			break
+		}
 	}
+	diags.AddError("Unable to find personal access token by name", fmt.Sprintf("Personal access token with user '%s' and name '%s' not found", user, tokenName))
+	return nil, diags
 
-	// Search for personal access token with given name
-	idx := slices.IndexFunc(tokens, func(t *forgejo.AccessToken) bool {
-		return strings.EqualFold(t.Name, tokenName)
-	})
-	if idx == -1 {
-		diags.AddError(
-			"Unable to find personal access token by name",
-			fmt.Sprintf(
-				"Personal access token with user '%s' and name '%s' not found",
-				user,
-				tokenName,
-			),
-		)
-
-		return nil, diags
-	}
-	return tokens[idx], diags
 }
 
 // NewPersonalAccessTokenDataSource is a helper function to simplify the provider implementation.

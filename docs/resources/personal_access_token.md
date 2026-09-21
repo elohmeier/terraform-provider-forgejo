@@ -56,8 +56,21 @@ resource "forgejo_personal_access_token" "test_token" {
 - `scopes` (Set of String) Scopes of the personal access token. Changing this forces a new resource to be created.
 - `user` (String) Name of the user. Changing this forces a new resource to be created.
 
+### Optional
+
+- `repository_ids` (Set of Number) Restrict the token to these numeric repository IDs. Empty means unrestricted by repository. Changing this replaces the token; repository-limited tokens only support repository and issue scopes.
+
 ### Read-Only
 
 - `id` (Number) Numeric identifier of the personal access token.
 - `token` (String, Sensitive) The personal access token.
 - `token_last_eight` (String) Last eight characters of the personal access token.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Import metadata only; the token value cannot be recovered.
+terraform import forgejo_personal_access_token.test_token username/123
+```

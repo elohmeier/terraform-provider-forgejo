@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
+	"net/http"
+	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -22,13 +25,15 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &personalAccessTokenResource{}
-	_ resource.ResourceWithConfigure = &personalAccessTokenResource{}
+	_ resource.Resource                = &personalAccessTokenResource{}
+	_ resource.ResourceWithConfigure   = &personalAccessTokenResource{}
+	_ resource.ResourceWithImportState = &personalAccessTokenResource{}
 )
 
 // personalAccessTokenResource is the resource implementation.
 type personalAccessTokenResource struct {
 	client *forgejo.Client
+	api    *apiClient
 }
 
 // personalAccessTokenResourceModel maps the resource schema data.
@@ -40,6 +45,7 @@ type personalAccessTokenResourceModel struct {
 	Token          types.String `tfsdk:"token"`
 	TokenLastEight types.String `tfsdk:"token_last_eight"`
 	Scopes         types.Set    `tfsdk:"scopes"`
+	RepositoryIDs  types.Set    `tfsdk:"repository_ids"`
 }
 
 // from is a helper function to load an API struct into Terraform data model.
@@ -104,6 +110,12 @@ func (r *personalAccessTokenResource) Schema(_ context.Context, _ resource.Schem
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"repository_ids": schema.SetAttribute{
+				Description: "Restrict the token to these numeric repository IDs. Empty means unrestricted by repository. Changing this replaces the token; repository-limited tokens only support repository and issue scopes.",
+				Optional:    true, Computed: true, ElementType: types.Int64Type,
+				Default:       setdefault.StaticValue(types.SetValueMust(types.Int64Type, nil)),
+				PlanModifiers: []planmodifier.Set{setplanmodifier.RequiresReplace()},
 			},
 			"scopes": schema.SetAttribute{
 				Description: "Scopes of the personal access token. Changing this forces a new resource to be created.",
@@ -182,12 +194,12 @@ func (r *personalAccessTokenResource) Configure(_ context.Context, req resource.
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	configured, ok := req.ProviderData.(*providerClient)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -195,7 +207,8 @@ func (r *personalAccessTokenResource) Configure(_ context.Context, req resource.
 		return
 	}
 
-	r.client = client
+	r.client = configured.Client
+	r.api = configured.api
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -225,58 +238,28 @@ func (r *personalAccessTokenResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
-	// Use Forgejo client to create new personal access token
-	token, res, err := r.client.CreateAccessToken(
-		data.User.ValueString(),
-		opts,
-	)
+	var repositoryIDs []int64
+	resp.Diagnostics.Append(data.RepositoryIDs.ElementsAs(ctx, &repositoryIDs, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	token, status, err := r.createToken(ctx, data.User.ValueString(), opts, repositoryIDs)
 	if err != nil {
-		var msg string
-		if res == nil {
-			msg = fmt.Sprintf("Unknown error with nil response: %s", err)
-		} else {
-			tflog.Error(ctx, "Error", map[string]any{
-				"status": res.Status,
-			})
-
-			switch res.StatusCode {
-			case 400:
-				msg = fmt.Sprintf(
-					"Bad request: %s",
-					err,
-				)
-			case 401:
-				msg = fmt.Sprintf(
-					"Authentication method not allowed, use basic-auth: %s",
-					err,
-				)
-			case 403:
-				msg = fmt.Sprintf(
-					"Personal access token for user %s forbidden: %s",
-					data.User.String(),
-					err,
-				)
-			case 404:
-				msg = fmt.Sprintf(
-					"Personal access token for user %s not found: %s",
-					data.User.String(),
-					err,
-				)
-			default:
-				msg = fmt.Sprintf(
-					"Unknown error (status %d): %s",
-					res.StatusCode,
-					err,
-				)
-			}
+		message := err.Error()
+		switch status {
+		case http.StatusUnauthorized:
+			message = "Authentication method not allowed, use basic-auth"
+		case http.StatusNotFound:
+			message = fmt.Sprintf("Personal access token for user %s not found", data.User.String())
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			message = "Token rejected: access token name has been used already, scopes are invalid, or repository restrictions are not supported for these scopes"
 		}
-		resp.Diagnostics.AddError("Unable to create personal access token", msg)
-
+		resp.Diagnostics.AddError("Unable to create personal access token", message)
 		return
 	}
 
 	// Map response body to model
-	diags = data.from(ctx, token)
+	diags = data.from(ctx, &token.AccessToken)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -303,20 +286,24 @@ func (r *personalAccessTokenResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	// Use Forgejo client to get personal access token
-	token, diags := getPersonalAccessToken(
-		ctx,
-		r.client,
-		data.User.ValueString(),
-		data.Name.ValueString(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	token, err := r.findToken(ctx, data.User.ValueString(), data.ID.ValueInt64())
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read personal access token", err.Error())
 		return
 	}
+	if token == nil {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	ids := make([]int64, 0, len(token.Repositories))
+	for _, repo := range token.Repositories {
+		ids = append(ids, repo.ID)
+	}
+	data.RepositoryIDs, diags = types.SetValueFrom(ctx, types.Int64Type, ids)
+	resp.Diagnostics.Append(diags...)
 
 	// Map response body to model
-	diags = data.from(ctx, token)
+	diags = data.from(ctx, &token.AccessToken)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -403,4 +390,37 @@ func (r *personalAccessTokenResource) Delete(ctx context.Context, req resource.D
 // NewpersonalAccessTokenResource is a helper function to simplify the provider implementation.
 func NewPersonalAccessTokenResource() resource.Resource {
 	return &personalAccessTokenResource{}
+}
+
+// ImportState adopts token metadata. The token value cannot be recovered.
+func (r *personalAccessTokenResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	parts, err := importParts(req.ID, 2)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid import identifier", "Expected username/token-id.")
+		return
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || id <= 0 {
+		resp.Diagnostics.AddError("Invalid token ID", "Expected a positive numeric token ID.")
+		return
+	}
+	token, err := r.findToken(ctx, parts[0], id)
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to import token", err.Error())
+		return
+	}
+	if token == nil {
+		resp.Diagnostics.AddError("Token not found", "No token with that ID belongs to the specified user.")
+		return
+	}
+	data := personalAccessTokenResourceModel{User: types.StringValue(parts[0]), Token: types.StringNull()}
+	resp.Diagnostics.Append(data.from(ctx, &token.AccessToken)...)
+	ids := make([]int64, 0, len(token.Repositories))
+	for _, repo := range token.Repositories {
+		ids = append(ids, repo.ID)
+	}
+	var diags diag.Diagnostics
+	data.RepositoryIDs, diags = types.SetValueFrom(ctx, types.Int64Type, ids)
+	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

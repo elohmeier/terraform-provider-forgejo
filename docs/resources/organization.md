@@ -53,7 +53,7 @@ resource "forgejo_organization" "non_defaults" {
 - `description` (String) Description of the organization.
 - `full_name` (String) Full name of the organization.
 - `location` (String) Location of the organization.
-- `repo_admin_change_team_access` (Boolean) Whether repository admin can add and remove access for teams. Changing this forces a new resource to be created.
+- `repo_admin_change_team_access` (Boolean) Whether repository admins can add and remove team access.
 - `visibility` (String) Visibility of the organization. Possible values are 'public' (default), 'limited', or 'private'.
 - `website` (String) Website of the organization.
 
@@ -61,3 +61,12 @@ resource "forgejo_organization" "non_defaults" {
 
 - `avatar_url` (String) Avatar URL of the organization.
 - `id` (Number) Numeric identifier of the organization.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Import by organisation name.
+terraform import forgejo_organization.defaults existing_org
+```

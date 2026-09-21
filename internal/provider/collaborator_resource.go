@@ -19,8 +19,9 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &collaboratorResource{}
-	_ resource.ResourceWithConfigure = &collaboratorResource{}
+	_ resource.Resource                = &collaboratorResource{}
+	_ resource.ResourceWithConfigure   = &collaboratorResource{}
+	_ resource.ResourceWithImportState = &collaboratorResource{}
 )
 
 // collaboratorResource is the resource implementation.
@@ -101,12 +102,12 @@ func (r *collaboratorResource) Configure(_ context.Context, req resource.Configu
 		return
 	}
 
-	client, ok := req.ProviderData.(*forgejo.Client)
+	client, ok := sdkClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
 			fmt.Sprintf(
-				"Expected *forgejo.Client, got: %T. Please report this issue to the provider developers.",
+				"Expected *providerClient, got: %T. Please report this issue to the provider developers.",
 				req.ProviderData,
 			),
 		)
@@ -235,14 +236,22 @@ func (r *collaboratorResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	// Use Forgejo client to get repository
-	rep, diags := getRepositoryByID(
-		ctx,
-		r.client,
-		data.RepositoryID.ValueInt64(),
-	)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	rep, result, err := r.client.GetRepoByID(data.RepositoryID.ValueInt64())
+	if isNotFound(result, err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read repository", err.Error())
+		return
+	}
+	direct, result, err := r.client.IsCollaborator(rep.Owner.UserName, rep.Name, data.User.ValueString())
+	if isNotFound(result, err) || (err == nil && !direct) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read collaborator", err.Error())
 		return
 	}
 

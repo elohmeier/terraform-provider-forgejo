@@ -27,8 +27,9 @@ const (
 		password = ""
 	}
 `
+	// The in-process protocol test harness cannot isolate provider aliases.
+	// Token tests use one BasicAuth provider; production aliases use separate processes.
 	providerBasicAuthConfig = `provider "forgejo" {
-		alias     = "basicAuth"
 		host      = "` + forgejoTestHost + `"
 		api_token = ""
 	}
