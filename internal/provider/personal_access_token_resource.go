@@ -3,17 +3,19 @@ package provider
 import (
 	"context"
 	"fmt"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -39,6 +41,7 @@ type personalAccessTokenResource struct {
 // personalAccessTokenResourceModel maps the resource schema data.
 // https://pkg.go.dev/codeberg.org/mvdkleijn/forgejo-sdk/forgejo/v3#AccessToken
 type personalAccessTokenResourceModel struct {
+	UseAdminAPI    types.Bool   `tfsdk:"use_admin_api"`
 	User           types.String `tfsdk:"user"`
 	ID             types.Int64  `tfsdk:"id"`
 	Name           types.String `tfsdk:"name"`
@@ -94,9 +97,13 @@ func (r *personalAccessTokenResource) Schema(_ context.Context, _ resource.Schem
 	resp.Schema = schema.Schema{
 		MarkdownDescription: `Forgejo personal access token resource.
 
-**Note**: Due to an upstream limitation, one cannot create access tokens when authorized with access tokens. Use basic-auth instead.`,
+Use ` + "`use_admin_api = true`" + ` on Forgejo 16+ to manage users' tokens using an administrator API token with write:admin scope. The default user API requires BasicAuth for creation and deletion.`,
 
 		Attributes: map[string]schema.Attribute{
+			"use_admin_api": schema.BoolAttribute{
+				Description: "Use Forgejo 16+ administrator token endpoints. Requires administrator credentials with write:admin scope. Switching this setting verifies access without rotating the token.",
+				Optional:    true, Computed: true, Default: booldefault.StaticBool(false),
+			},
 			"user": schema.StringAttribute{
 				Description: "Name of the user. Changing this forces a new resource to be created.",
 				Required:    true,
@@ -243,12 +250,15 @@ func (r *personalAccessTokenResource) Create(ctx context.Context, req resource.C
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	token, status, err := r.createToken(ctx, data.User.ValueString(), opts, repositoryIDs)
+	token, status, err := r.createToken(ctx, data.User.ValueString(), opts, repositoryIDs, data.UseAdminAPI.ValueBool())
 	if err != nil {
 		message := err.Error()
 		switch status {
 		case http.StatusUnauthorized:
-			message = "Authentication method not allowed, use basic-auth"
+			message = "Authentication failed: verify administrator credentials and write:admin scope"
+			if !data.UseAdminAPI.ValueBool() {
+				message = "Authentication method not allowed, use basic-auth or use_admin_api on Forgejo 16+"
+			}
 		case http.StatusNotFound:
 			message = fmt.Sprintf("Personal access token for user %s not found", data.User.String())
 		case http.StatusBadRequest, http.StatusUnprocessableEntity:
@@ -286,7 +296,7 @@ func (r *personalAccessTokenResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	token, err := r.findToken(ctx, data.User.ValueString(), data.ID.ValueInt64())
+	token, err := r.findToken(ctx, data.User.ValueString(), data.ID.ValueInt64(), data.UseAdminAPI.ValueBool())
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read personal access token", err.Error())
 		return
@@ -318,10 +328,22 @@ func (r *personalAccessTokenResource) Read(ctx context.Context, req resource.Rea
 func (r *personalAccessTokenResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	defer un(trace(ctx, "Update personal access token resource"))
 
-	/*
-	 * Personal access tokens can not be updated in-place. All writable attributes have
-	 * 'RequiresReplace' plan modifier set.
-	 */
+	// Only the API selection can change in place; token properties require replacement.
+	var data personalAccessTokenResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	token, err := r.findToken(ctx, data.User.ValueString(), data.ID.ValueInt64(), data.UseAdminAPI.ValueBool())
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to change token management API", err.Error())
+		return
+	}
+	if token == nil {
+		resp.Diagnostics.AddError("Token not found", "The selected API cannot find the existing token; no token was rotated.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
@@ -342,49 +364,11 @@ func (r *personalAccessTokenResource) Delete(ctx context.Context, req resource.D
 		"name": data.Name.ValueString(),
 	})
 
-	// Use Forgejo client to delete existing personal access token
-	res, err := r.client.DeleteAccessToken(
-		data.User.ValueString(),
-		data.ID.ValueInt64(),
-	)
-	if err == nil {
-		return
+	status, err := r.api.request(ctx, http.MethodDelete,
+		fmt.Sprintf("%s/%d", tokenPath(data.User.ValueString(), data.UseAdminAPI.ValueBool()), data.ID.ValueInt64()), nil, nil)
+	if err != nil && status != http.StatusNotFound {
+		resp.Diagnostics.AddError("Unable to delete personal access token", err.Error())
 	}
-
-	var msg string
-	if res == nil {
-		msg = fmt.Sprintf("Unknown error with nil response: %s", err)
-	} else {
-		tflog.Error(ctx, "Error", map[string]any{
-			"status": res.Status,
-		})
-
-		switch res.StatusCode {
-		case 403:
-			msg = fmt.Sprintf(
-				"Personal access token with user %s and ID %d forbidden: %s",
-				data.User.String(),
-				data.ID.ValueInt64(),
-				err,
-			)
-		case 404:
-			msg = fmt.Sprintf(
-				"Personal access token with user %s and ID %d not found: %s",
-				data.User.String(),
-				data.ID.ValueInt64(),
-				err,
-			)
-		case 422:
-			msg = fmt.Sprintf("Input validation error: %s", err)
-		default:
-			msg = fmt.Sprintf(
-				"Unknown error (status %d): %s",
-				res.StatusCode,
-				err,
-			)
-		}
-	}
-	resp.Diagnostics.AddError("Unable to delete personal access token", msg)
 }
 
 // NewpersonalAccessTokenResource is a helper function to simplify the provider implementation.
@@ -394,9 +378,14 @@ func NewPersonalAccessTokenResource() resource.Resource {
 
 // ImportState adopts token metadata. The token value cannot be recovered.
 func (r *personalAccessTokenResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	parts, err := importParts(req.ID, 2)
+	admin := strings.HasPrefix(req.ID, "admin/") && strings.Count(req.ID, "/") == 2
+	identifier := req.ID
+	if admin {
+		identifier = strings.TrimPrefix(identifier, "admin/")
+	}
+	parts, err := importParts(identifier, 2)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid import identifier", "Expected username/token-id.")
+		resp.Diagnostics.AddError("Invalid import identifier", "Expected username/token-id or admin/username/token-id.")
 		return
 	}
 	id, err := strconv.ParseInt(parts[1], 10, 64)
@@ -404,7 +393,7 @@ func (r *personalAccessTokenResource) ImportState(ctx context.Context, req resou
 		resp.Diagnostics.AddError("Invalid token ID", "Expected a positive numeric token ID.")
 		return
 	}
-	token, err := r.findToken(ctx, parts[0], id)
+	token, err := r.findToken(ctx, parts[0], id, admin)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to import token", err.Error())
 		return
@@ -413,7 +402,7 @@ func (r *personalAccessTokenResource) ImportState(ctx context.Context, req resou
 		resp.Diagnostics.AddError("Token not found", "No token with that ID belongs to the specified user.")
 		return
 	}
-	data := personalAccessTokenResourceModel{User: types.StringValue(parts[0]), Token: types.StringNull()}
+	data := personalAccessTokenResourceModel{UseAdminAPI: types.BoolValue(admin), User: types.StringValue(parts[0]), Token: types.StringNull()}
 	resp.Diagnostics.Append(data.from(ctx, &token.AccessToken)...)
 	ids := make([]int64, 0, len(token.Repositories))
 	for _, repo := range token.Repositories {

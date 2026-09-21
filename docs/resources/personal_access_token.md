@@ -4,14 +4,14 @@ page_title: "forgejo_personal_access_token Resource - forgejo"
 subcategory: ""
 description: |-
   Forgejo personal access token resource.
-  Note: Due to an upstream limitation, one cannot create access tokens when authorized with access tokens. Use basic-auth instead.
+  Use use_admin_api = true on Forgejo 16+ to manage users' tokens using an administrator API token with write:admin scope. The default user API requires BasicAuth for creation and deletion.
 ---
 
 # forgejo_personal_access_token (Resource)
 
 Forgejo personal access token resource.
 
-**Note**: Due to an upstream limitation, one cannot create access tokens when authorized with access tokens. Use basic-auth instead.
+Use `use_admin_api = true` on Forgejo 16+ to manage users' tokens using an administrator API token with write:admin scope. The default user API requires BasicAuth for creation and deletion.
 
 ## Example Usage
 
@@ -19,7 +19,8 @@ Forgejo personal access token resource.
 terraform {
   required_providers {
     forgejo = {
-      source = "svalabs/forgejo"
+      source  = "registry.opentofu.org/elohmeier/forgejo"
+      version = "1.6.1-ops.2"
     }
   }
 }
@@ -28,8 +29,9 @@ variable "test_password" { sensitive = true }
 
 provider "forgejo" {
   host = "http://localhost:3000"
-  // Due to an upstream limitation, one cannot create access tokens when authorized with an access token.
-  // Use basic-auth instead (FORGEJO_USERNAME / FORGEJO_PASSWORD environment variables).
+  // Forgejo 16+: supply an administrator FORGEJO_API_TOKEN with write:admin scope.
+  // Include the scopes needed to read/manage other resources too.
+  // Older servers: omit use_admin_api below and use BasicAuth credentials.
 }
 
 resource "forgejo_user" "test_user" {
@@ -39,8 +41,9 @@ resource "forgejo_user" "test_user" {
 }
 
 resource "forgejo_personal_access_token" "test_token" {
-  user = forgejo_user.test_user.login
-  name = "test token"
+  use_admin_api = true
+  user          = forgejo_user.test_user.login
+  name          = "test token"
   scopes = [
     "read:repository"
   ]
@@ -59,6 +62,7 @@ resource "forgejo_personal_access_token" "test_token" {
 ### Optional
 
 - `repository_ids` (Set of Number) Restrict the token to these numeric repository IDs. Empty means unrestricted by repository. Changing this replaces the token; repository-limited tokens only support repository and issue scopes.
+- `use_admin_api` (Boolean) Use Forgejo 16+ administrator token endpoints. Requires administrator credentials with write:admin scope. Switching this setting verifies access without rotating the token.
 
 ### Read-Only
 
@@ -73,4 +77,7 @@ Import is supported using the following syntax:
 ```shell
 # Import metadata only; the token value cannot be recovered.
 terraform import forgejo_personal_access_token.test_token username/123
+
+# Use the administrator API on Forgejo 16+; set use_admin_api = true in configuration.
+terraform import forgejo_personal_access_token.bot admin/bot-user/456
 ```

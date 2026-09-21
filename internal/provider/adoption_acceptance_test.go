@@ -2,9 +2,11 @@ package provider_test
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"codeberg.org/mvdkleijn/forgejo-sdk/forgejo/v3"
@@ -218,6 +220,19 @@ import {
 }
 
 func TestAccForkOrganizationVisibilityAndAccess(t *testing.T) {
+	publicStep := resource.TestStep{}
+	if os.Getenv("TF_ACC") != "" {
+		version, _, err := forkClient(t).ServerVersion()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.SplitN(strings.TrimPrefix(version, "v"), "+", 2)[0] == "15.0.1" {
+			publicStep.ExpectError = regexp.MustCompile("Forgejo ignored organization visibility change")
+		} else {
+			publicStep.Check = resource.TestCheckResourceAttr("forgejo_organization.visibility", "visibility", "public")
+		}
+	}
+
 	config := func(visibility string, allow bool) string {
 		return providerConfig + fmt.Sprintf(`
 resource "forgejo_organization" "visibility" {
@@ -228,12 +243,127 @@ resource "forgejo_organization" "visibility" {
  repo_admin_change_team_access = %t
 }`, visibility, allow)
 	}
+	publicStep.Config = config("public", true)
 	resource.Test(t, resource.TestCase{PreCheck: func() { testAccPreCheck(t) }, ProtoV6ProviderFactories: testAccProtoV6ProviderFactories, Steps: []resource.TestStep{
 		{Config: config("public", true)},
 		{Config: config("private", false), ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("forgejo_organization.visibility", plancheck.ResourceActionUpdate)}}},
 		{ResourceName: "forgejo_organization.visibility", ImportState: true, ImportStateId: "iac-visibility", ImportStateVerify: true},
 		{Config: config("limited", true), Check: resource.ComposeTestCheckFunc(resource.TestCheckResourceAttr("forgejo_organization.visibility", "full_name", "Preserved display name"), resource.TestCheckResourceAttr("forgejo_organization.visibility", "description", "Preserved description"))},
-		{Config: config("public", true), ExpectError: regexp.MustCompile("Forgejo ignored organization visibility change")},
+		publicStep,
 		{Config: config("limited", true)},
+	}})
+}
+
+func requireForgejo16(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+	version, _, err := forkClient(t).ServerVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	major, err := strconv.Atoi(strings.Split(strings.TrimPrefix(version, "v"), ".")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if major < 16 {
+		t.Skip("administrator token API requires Forgejo 16+")
+	}
+}
+
+func TestAccForkAdminToken(t *testing.T) {
+	requireForgejo16(t)
+	config := providerConfig + `
+resource "forgejo_user" "bot" {
+ login = "iac-admin-token-bot"
+ email = "iac-admin-token-bot@localhost.localdomain"
+ password = "disposable-bot-password"
+ must_change_password = false
+}
+resource "forgejo_repository" "allowed" {
+ owner = forgejo_user.bot.login
+ name = "allowed"
+ private = true
+}
+resource "forgejo_repository" "denied" {
+ owner = forgejo_user.bot.login
+ name = "denied"
+ private = true
+}
+resource "forgejo_personal_access_token" "bot" {
+ user = forgejo_user.bot.login
+ name = "automation"
+ use_admin_api = true
+ scopes = ["read:repository"]
+ repository_ids = [forgejo_repository.allowed.id]
+}`
+	var id string
+	resource.Test(t, resource.TestCase{PreCheck: func() { testAccPreCheck(t) }, ProtoV6ProviderFactories: testAccProtoV6ProviderFactories, Steps: []resource.TestStep{
+		{Config: config, Check: func(s *terraform.State) error {
+			attrs := s.RootModule().Resources["forgejo_personal_access_token.bot"].Primary.Attributes
+			id = attrs["id"]
+			if attrs["token"] == "" {
+				return fmt.Errorf("administrator API did not return a token")
+			}
+			c, err := forgejo.NewClient(forgejoTestHost, forgejo.SetToken(attrs["token"]))
+			if err != nil {
+				return err
+			}
+			if _, _, err := c.GetRepo("iac-admin-token-bot", "allowed"); err != nil {
+				return fmt.Errorf("bot token cannot read allowed repository")
+			}
+			if _, response, err := c.GetRepo("iac-admin-token-bot", "denied"); err == nil || response == nil || (response.StatusCode != 403 && response.StatusCode != 404) {
+				return fmt.Errorf("bot token repository restriction not enforced")
+			}
+			return nil
+		}},
+		{Config: config, PlanOnly: true},
+		{ResourceName: "forgejo_personal_access_token.bot", ImportState: true, ImportStateIdFunc: func(*terraform.State) (string, error) { return "admin/iac-admin-token-bot/" + id, nil }, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"token"}},
+		{Config: config, PreConfig: func() {
+			req, err := http.NewRequest(http.MethodDelete, forgejoTestHost+"/api/v1/admin/users/iac-admin-token-bot/tokens/"+id, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "token "+os.Getenv("FORGEJO_API_TOKEN"))
+			response, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				t.Fatalf("delete returned HTTP %d", response.StatusCode)
+			}
+		}, ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("forgejo_personal_access_token.bot", plancheck.ResourceActionCreate)}}},
+		{Config: config, PlanOnly: true},
+	}})
+}
+
+func TestAccForkTokenChangeManagementAPI(t *testing.T) {
+	requireForgejo16(t)
+	config := func(admin bool) string {
+		return providerBasicAuthConfig + fmt.Sprintf(`
+resource "forgejo_personal_access_token" "switch" {
+ user = "tfadmin"
+ name = "iac-switch-api"
+ scopes = ["read:repository"]
+ use_admin_api = %t
+}`, admin)
+	}
+	var id, token string
+	resource.Test(t, resource.TestCase{PreCheck: func() { testAccPreCheck(t) }, ProtoV6ProviderFactories: testAccProtoV6ProviderFactories, Steps: []resource.TestStep{
+		{Config: config(false), Check: func(s *terraform.State) error {
+			attrs := s.RootModule().Resources["forgejo_personal_access_token.switch"].Primary.Attributes
+			id, token = attrs["id"], attrs["token"]
+			return nil
+		}},
+		{Config: config(true), ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("forgejo_personal_access_token.switch", plancheck.ResourceActionUpdate)}}, Check: func(s *terraform.State) error {
+			attrs := s.RootModule().Resources["forgejo_personal_access_token.switch"].Primary.Attributes
+			if attrs["id"] != id || attrs["token"] != token {
+				return fmt.Errorf("switching management API rotated the token")
+			}
+			return nil
+		}},
+		{Config: config(true), PlanOnly: true},
 	}})
 }

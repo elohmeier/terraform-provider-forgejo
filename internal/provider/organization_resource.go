@@ -326,7 +326,7 @@ func (r *organizationResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 	if org.Visibility != data.Visibility.ValueString() {
-		resp.Diagnostics.AddError("Forgejo ignored organization visibility change", "Forgejo 15.0.1 cannot change an existing private/limited organisation back to public through either the organisation or admin-user API. Upgrade to a server version with this API bug fixed or change visibility through the web interface, then refresh. The provider will not replace the organisation or claim the change succeeded.")
+		resp.Diagnostics.AddError("Forgejo ignored organization visibility change", "The server did not apply the requested visibility. Forgejo 15.0.1 has this API bug when changing private/limited organisations to public; Forgejo 16.0.5 is verified to support it. Upgrade the server or change visibility through the web interface, then refresh. The provider will not replace the organisation or claim the change succeeded.")
 		return
 	}
 	data.from(org)

@@ -3,7 +3,8 @@
 This fork is based on `svalabs/forgejo` v1.6.1. It is intended for adopting an
 existing Forgejo installation under OpenTofu without recreating its repositories,
 organisations or users. Research and validation were performed on 2026-09-21.
-The fork has not been published to either provider registry.
+Forgejo **16.0.5** is the primary server target; the earlier 15.0.1 API path
+remains available for adoption before upgrading. The fork has not been published to either provider registry.
 
 ## Open upstream PR review
 
@@ -12,7 +13,7 @@ The fork has not been published to either provider registry.
 | [#155: team repository resource](https://github.com/svalabs/terraform-provider-forgejo/pull/155) | Cherry-picked with original authorship. Adapted to `team_id` and `repository_id` as requested by the maintainer; uses the direct membership endpoint, supports `org/team/repo` import, detects deletion and tolerates already-absent grants on destroy. Added acceptance tests. |
 | [#178: pagination](https://github.com/svalabs/terraform-provider-forgejo/pull/178) | Cherry-picked with original authorship. Also paginated the token data source introduced after that PR. Added short-page unit regressions and a live lookup among 55 teams. |
 | [#186: team permissions](https://github.com/svalabs/terraform-provider-forgejo/pull/186) | Not cherry-picked as written: it has an acknowledged SDK validation problem and removes existing configuration forms. Removed the default `permission = "read"`; when omitted, a valid SDK request lets Forgejo derive the effective permission from `units_map`. Existing explicit configurations remain supported. Tested granular read/write units. |
-| [#142: organisation visibility fallback](https://github.com/svalabs/terraform-provider-forgejo/pull/142) | Rejected after testing: the administrator fallback also fails to change private/limited visibility to public on Forgejo 15.0.1. Both API handlers use `optional.FromNonDefault` for the public/zero visibility value. The provider now fails with a specific diagnostic instead of claiming success or replacing the organisation. |
+| [#142: organisation visibility fallback](https://github.com/svalabs/terraform-provider-forgejo/pull/142) | Rejected after testing: the administrator fallback also fails to change private/limited visibility to public on Forgejo 15.0.1. Both API handlers use `optional.FromNonDefault` for the public/zero visibility value. Forgejo 16.0.5 fixes the normal organisation endpoint; no admin fallback is needed. Older servers still receive a specific diagnostic instead of a false success. |
 | [#199: mirror interval normalization](https://github.com/svalabs/terraform-provider-forgejo/pull/199) | Reviewed, not included: mirror migration/normalization is outside this adoption and access-management scope. |
 
 [Upstream issue #166](https://github.com/svalabs/terraform-provider-forgejo/issues/166)
@@ -41,8 +42,12 @@ import. Other key and Actions-variable importers are not added in this change.
 - `forgejo_personal_access_token`: `repository_ids` restricts the token to specific
   repositories. Empty means no repository restriction. Changing restrictions or
   scopes replaces the token. Import `username/numeric-token-id` to adopt metadata;
-  the original token value cannot be recovered. BasicAuth remains required by
-  Forgejo for creation/deletion. Use repository/issue scopes with restricted
+  the original token value cannot be recovered. Set `use_admin_api = true` on
+  Forgejo 16+ to create, read and revoke bot tokens using an administrator API
+  token with `write:admin` scope, without the bot password. Import via
+  `admin/username/numeric-token-id`. Switching this flag validates access without
+  rotating the token. The default user API still requires BasicAuth for
+  creation/deletion. Use repository/issue scopes with restricted
   tokens; broader scopes are rejected by Forgejo.
 - `forgejo_oauth2_application`: CRUD and import by numeric application ID, owned
   by the authenticated user. Every API update regenerates the client secret;
@@ -67,15 +72,17 @@ owned by Woodpecker. Forgejo Actions secrets are distinct from Woodpecker secret
 Forgejo 15.0.1 can create a public organisation and make it private, but its API
 cannot change an existing private/limited organisation back to public. The
 provider detects this failure. Use the web interface for that transition or a
-server version with the API bug fixed; no particular fixed version was verified.
-The failing transition and subsequent recovery are covered by acceptance tests.
+Forgejo 16.0.5, where the transition is verified to succeed in place. Tests
+cover both the older failure/recovery and successful 16.0.5 visibility changes.
 
 External authentication sources, including Kanidm OIDC login, have no resource
 in this fork. Keep the existing CLI bootstrap/reconciliation with explicit
 verification. The OAuth application resource configures Forgejo as an OAuth
 provider for another application, not Forgejo's own external login provider.
-Token minting also does not remove Forgejo's BasicAuth requirement or deliver
-secrets to SOPS, Kubernetes or Woodpecker.
+On Forgejo 16+, the administrator token endpoint removes the BasicAuth blocker
+for bot token management. It does not deliver secrets to SOPS, Kubernetes or
+Woodpecker. Repository restrictions require resolving IDs through the repository
+API, so the provider credential also needs `read:repository` when using them.
 
 ## Build and use locally
 
@@ -85,7 +92,7 @@ Run from this checkout:
 make install-local
 ```
 
-This builds version `1.6.1-ops.1` in the ignored `bin/mirror/` directory and writes
+This builds version `1.6.1-ops.2` in the ignored `bin/mirror/` directory and writes
 an isolated `bin/tofurc`. It does not change global OpenTofu settings or download
 a similarly named registry provider. Use the resulting configuration explicitly:
 
@@ -100,7 +107,7 @@ terraform {
   required_providers {
     forgejo = {
       source  = "registry.opentofu.org/elohmeier/forgejo"
-      version = "1.6.1-ops.1"
+      version = "1.6.1-ops.2"
     }
   }
 }
@@ -137,8 +144,8 @@ runs the pinned documentation generator. It requires no production credentials,
 registry publication or Terraform executable.
 
 The acceptance runner requires Docker, Python 3, Go and OpenTofu. It creates a
-fresh Forgejo 15.0.1 rootless container bound to `127.0.0.1:3000`, using SQLite and
-temporary credentials held in process memory. It removes the container and its
+fresh digest-pinned Forgejo 16.0.5 rootless container bound to `127.0.0.1:3000`,
+using SQLite and temporary credentials held in process memory. It removes the container and its
 anonymous volumes afterward. Port 3000 must be free. It never uses an external
 Forgejo instance. Individual tests can be selected, for example:
 
@@ -146,11 +153,15 @@ Forgejo instance. Individual tests can be selected, for example:
 python tools/test-acceptance.py ./internal/provider -run TestAccFork -v
 ```
 
-The complete suite passed against this disposable server. Regressions cover
-resource import, externally removed access grants, two consecutive no-change
+The complete suite passed against this disposable server. Set
+`FORGEJO_TEST_IMAGE` to test another local disposable server version, for example
+`codeberg.org/forgejo/forgejo:15.0.1-rootless@sha256:4f4d168b4e792d0f73e5f4da0548f3b54b9c9d03fb85f277c97eb985cb9a290a`.
+Administrator token acceptance tests explicitly skip servers older than 16.
+Regressions cover resource import, externally removed access grants, two consecutive no-change
 plans, user-password preservation, pagination past 50 teams, organisation access
-updates, OAuth secret rotation and access denial to a private repository outside
-a token's allowlist. HTTP tests verify that 403/500 errors retain managed state
+updates, administrator token creation/import/revocation/drift recovery, switching
+token management APIs without rotation, OAuth secret rotation and access denial
+to a private repository outside a token's allowlist. HTTP tests verify that 403/500 errors retain managed state
 and that the API extension does not echo response bodies or follow redirects.
 
 Token acceptance tests use one provider configuration because the in-process
@@ -162,3 +173,17 @@ alias handling.
 Upstream cherry-picks retain their authors and source commit IDs. Keep fork
 changes separate from those imports to make future upstream rebases reviewable.
 No upstream PRs or issue comments were posted as part of this work.
+
+## Server upgrade considerations
+
+[Forgejo 16](https://forgejo.org/2026-07-release-v16-0/) is a non-LTS line,
+supported until 2026-10-29. Targeting it means following later majors; 15 LTS is
+supported until 2027-07-15. Version 16 adds administrator token management and
+Authorized Integrations (JWT authentication); this fork does not yet manage
+Authorized Integrations.
+
+The disposable tests prove provider/API compatibility on a fresh SQLite server,
+not migration of a production PostgreSQL database. Follow the
+[server upgrade guide](https://forgejo.org/docs/v16.0/admin/upgrade/), including a
+consistent backup of the database, repositories and any object storage. Database
+migrations mean rollback requires restoring data as well as the old image.

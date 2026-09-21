@@ -21,7 +21,7 @@ type tokenRepositoryTarget struct {
 	Name  string `json:"name"`
 }
 
-func (r *personalAccessTokenResource) createToken(ctx context.Context, user string, opts forgejo.CreateAccessTokenOption, repositoryIDs []int64) (*tokenDetails, int, error) {
+func (r *personalAccessTokenResource) createToken(ctx context.Context, user string, opts forgejo.CreateAccessTokenOption, repositoryIDs []int64, admin bool) (*tokenDetails, int, error) {
 	payload := struct {
 		forgejo.CreateAccessTokenOption
 		Repositories []tokenRepositoryTarget `json:"repositories,omitempty"`
@@ -34,13 +34,13 @@ func (r *personalAccessTokenResource) createToken(ctx context.Context, user stri
 		payload.Repositories = append(payload.Repositories, tokenRepositoryTarget{Owner: repo.Owner.UserName, Name: repo.Name})
 	}
 	var token tokenDetails
-	status, err := r.api.request(ctx, http.MethodPost, "/users/"+url.PathEscape(user)+"/tokens", payload, &token)
+	status, err := r.api.request(ctx, http.MethodPost, tokenPath(user, admin), payload, &token)
 	return &token, status, err
 }
-func (r *personalAccessTokenResource) findToken(ctx context.Context, user string, id int64) (*tokenDetails, error) {
+func (r *personalAccessTokenResource) findToken(ctx context.Context, user string, id int64, admin bool) (*tokenDetails, error) {
 	for page := 1; ; page++ {
 		var tokens []tokenDetails
-		status, err := r.api.request(ctx, http.MethodGet, fmt.Sprintf("/users/%s/tokens?page=%d&limit=50", url.PathEscape(user), page), nil, &tokens)
+		status, err := r.api.request(ctx, http.MethodGet, fmt.Sprintf("%s?page=%d&limit=50", tokenPath(user, admin), page), nil, &tokens)
 		if status == http.StatusNotFound {
 			return nil, nil
 		}
@@ -56,4 +56,13 @@ func (r *personalAccessTokenResource) findToken(ctx context.Context, user string
 			return nil, nil
 		}
 	}
+}
+
+// Administrator endpoints added in Forgejo 16 support token authentication.
+func tokenPath(user string, admin bool) string {
+	prefix := "/users/"
+	if admin {
+		prefix = "/admin/users/"
+	}
+	return prefix + url.PathEscape(user) + "/tokens"
 }

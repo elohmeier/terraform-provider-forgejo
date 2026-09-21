@@ -80,7 +80,7 @@ func TestPaginatedLookupsPastShortPage(t *testing.T) {
 
 func TestManagedResourcesDistinguishMissingFromForbidden(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusInternalServerError} {
-		for _, kind := range []string{"organization", "team", "member", "team_repository", "collaborator", "oauth", "token"} {
+		for _, kind := range []string{"organization", "team", "member", "team_repository", "collaborator", "oauth", "token", "admin_token"} {
 			t.Run(fmt.Sprintf("%s/%d", kind, status), func(t *testing.T) {
 				client, api := mockForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(status)
@@ -107,9 +107,9 @@ func TestManagedResourcesDistinguishMissingFromForbidden(t *testing.T) {
 				case "oauth":
 					r = &oauth2ApplicationResource{client: client}
 					model = &oauth2ApplicationModel{ID: types.Int64Value(1), RedirectURIs: types.SetNull(types.StringType)}
-				case "token":
+				case "token", "admin_token":
 					r = &personalAccessTokenResource{client: client, api: api}
-					model = &personalAccessTokenResourceModel{User: types.StringValue("bot"), ID: types.Int64Value(1), Scopes: types.SetNull(types.StringType), RepositoryIDs: types.SetNull(types.Int64Type)}
+					model = &personalAccessTokenResourceModel{UseAdminAPI: types.BoolValue(kind == "admin_token"), User: types.StringValue("bot"), ID: types.Int64Value(1), Scopes: types.SetNull(types.StringType), RepositoryIDs: types.SetNull(types.Int64Type)}
 				}
 				ctx := context.Background()
 				var schema resource.SchemaResponse

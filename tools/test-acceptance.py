@@ -13,7 +13,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = f"forgejo-provider-test-{os.getpid()}"
-IMAGE = "codeberg.org/forgejo/forgejo:15.0.1-rootless@sha256:4f4d168b4e792d0f73e5f4da0548f3b54b9c9d03fb85f277c97eb985cb9a290a"
+IMAGE = os.environ.get("FORGEJO_TEST_IMAGE", "codeberg.org/forgejo/forgejo:16.0.5-rootless@sha256:5effb7305584aca479b29fde6f9631a6dbe86ae798ae02eeea33a3666f0c0bf8")
 
 
 def run(*args, **kwargs):

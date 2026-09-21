@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-version=1.6.1-ops.1
+version=1.6.1-ops.2
 platform="$(go env GOOS)_$(go env GOARCH)"
 mirror="$repo_root/bin/mirror"
 target="$mirror/registry.opentofu.org/elohmeier/forgejo/$version/$platform"
