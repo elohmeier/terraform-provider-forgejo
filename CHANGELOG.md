@@ -11,6 +11,7 @@ FEATURES:
 
 BUG FIXES:
 
+- Read the actual repository fast-forward-only merge setting during import and refresh, avoiding a false disabled value during adoption.
 - Paginate list lookups (upstream PR #178), including newer token lookups.
 - Recover missing organisations, teams, memberships, collaborator grants, team repository grants, OAuth applications and tokens during refresh.
 - Derive team permission from `units_map` when omitted, avoiding the invalid default read permission for granular write access.
@@ -20,7 +21,7 @@ BUG FIXES:
 DEVELOPMENT:
 
 - Target Forgejo 16.0.5 with a digest-pinned disposable acceptance runner; retain an image override for 15.0.1 compatibility checks. Verify successful organisation visibility-to-public updates on 16.0.5.
-- Local OpenTofu mirror build version `1.6.1-ops.2`.
+- Local OpenTofu mirror build version `1.6.1-ops.3`.
 - Generate documentation using OpenTofu without requiring Terraform or a published provider.
 
 ## 1.6.1 (September 18, 2026)

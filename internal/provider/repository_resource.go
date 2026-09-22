@@ -43,6 +43,7 @@ var (
 // repositoryResource is the resource implementation.
 type repositoryResource struct {
 	client *forgejo.Client
+	api    *apiClient
 }
 
 // repositoryResourceModel maps the resource schema data.
@@ -1224,7 +1225,7 @@ func (r *repositoryResource) Configure(_ context.Context, req resource.Configure
 		return
 	}
 
-	client, ok := sdkClient(req.ProviderData)
+	configured, ok := req.ProviderData.(*providerClient)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
@@ -1237,7 +1238,8 @@ func (r *repositoryResource) Configure(_ context.Context, req resource.Configure
 		return
 	}
 
-	r.client = client
+	r.client = configured.Client
+	r.api = configured.api
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -1632,6 +1634,11 @@ func (r *repositoryResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
+	if err := r.readRepositorySettings(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Unable to read repository settings", err.Error())
+		return
+	}
+
 	// Save data into Terraform state
 	diags = resp.State.Set(ctx, &data)
 	resp.Diagnostics.Append(diags...)
@@ -1942,6 +1949,11 @@ func (r *repositoryResource) ImportState(ctx context.Context, req resource.Impor
 
 	// Initialize sensitive write-only fields to null value
 	state.AuthToken = types.StringNull()
+
+	if err := r.readRepositorySettings(ctx, &state); err != nil {
+		resp.Diagnostics.AddError("Unable to import repository settings", err.Error())
+		return
+	}
 
 	// Save data into Terraform state
 	diags = resp.State.Set(ctx, &state)

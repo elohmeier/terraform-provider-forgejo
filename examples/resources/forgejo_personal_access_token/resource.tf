@@ -2,7 +2,7 @@ terraform {
   required_providers {
     forgejo = {
       source  = "registry.opentofu.org/elohmeier/forgejo"
-      version = "1.6.1-ops.2"
+      version = "1.6.1-ops.3"
     }
   }
 }

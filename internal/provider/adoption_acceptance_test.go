@@ -367,3 +367,32 @@ resource "forgejo_personal_access_token" "switch" {
 		{Config: config(true), PlanOnly: true},
 	}})
 }
+
+func TestAccForkRepositoryImportPreservesSettings(t *testing.T) {
+	config := providerConfig + `
+resource "forgejo_repository" "existing" {
+ owner = "tfadmin"
+ name = "iac-existing-settings"
+ private = true
+ default_branch = "main"
+ allow_fast_forward_only_merge = true
+}
+import {
+ to = forgejo_repository.existing
+ id = "tfadmin/iac-existing-settings"
+}`
+	resource.Test(t, resource.TestCase{PreCheck: func() { testAccPreCheck(t) }, ProtoV6ProviderFactories: testAccProtoV6ProviderFactories, Steps: []resource.TestStep{
+		{Config: config, PreConfig: func() {
+			c := forkClient(t)
+			_, _, err := c.CreateRepo(forgejo.CreateRepoOption{Name: "iac-existing-settings", Private: true, AutoInit: true, DefaultBranch: "main"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			enabled := true
+			if _, _, err = c.EditRepo("tfadmin", "iac-existing-settings", forgejo.EditRepoOption{AllowFastForwardOnly: &enabled}); err != nil {
+				t.Fatal(err)
+			}
+		}, ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("forgejo_repository.existing", plancheck.ResourceActionNoop)}}},
+		{Config: config, PlanOnly: true},
+	}})
+}

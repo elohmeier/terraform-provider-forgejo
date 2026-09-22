@@ -23,6 +23,9 @@ import. Other key and Actions-variable importers are not added in this change.
 
 ## Added and improved behaviour
 
+- `forgejo_repository`: preserve the live fast-forward-only merge setting on
+  import and detect subsequent drift. An omitted/empty wiki branch keeps the
+  server's existing branch rather than resetting it.
 - `forgejo_team_repository`: explicit grants between numeric team and repository
   IDs. The team must use `includes_all_repositories = false` when creating the
   grant. Import with `org/team/repo`.
@@ -92,7 +95,7 @@ Run from this checkout:
 make install-local
 ```
 
-This builds version `1.6.1-ops.2` in the ignored `bin/mirror/` directory and writes
+This builds version `1.6.1-ops.3` in the ignored `bin/mirror/` directory and writes
 an isolated `bin/tofurc`. It does not change global OpenTofu settings or download
 a similarly named registry provider. Use the resulting configuration explicitly:
 
@@ -107,7 +110,7 @@ terraform {
   required_providers {
     forgejo = {
       source  = "registry.opentofu.org/elohmeier/forgejo"
-      version = "1.6.1-ops.2"
+      version = "1.6.1-ops.3"
     }
   }
 }
